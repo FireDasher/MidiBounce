@@ -1,10 +1,11 @@
 #include "MidiParser.hpp"
 #include <algorithm>
+#include <array>
 
 // Read big endian
-template<typename T> inline T read(std::ifstream& file) {
-	T data = 0;
-	for (size_t byte = 0; byte < sizeof(T); ++byte) {
+inline uint32_t read(std::ifstream& file, int size) {
+	uint32_t data = 0;
+	for (int byte = 0; byte < size; ++byte) {
 		data = (data << 8) | file.get();
 	}
 	return data;
@@ -13,64 +14,60 @@ template<typename T> inline T read(std::ifstream& file) {
 inline uint32_t readVLQ(std::ifstream& file) {
 	uint32_t value = 0;
 	while (true) {
-		uint8_t byte = file.get();
+		int byte = file.get();
 		value = (value << 7) | (byte & 0x7F);
 		if (byte < 0x80) return value;
 	}
 }
 // Read one byte
-inline uint8_t readByte(std::ifstream& file) {
+inline int readByte(std::ifstream& file) {
 	return file.get();
 }
 
-Midi::MidiFile Midi::loadMidi10(const std::string& path) {
-    MidiFile mid;
-
+std::vector<Midi::Note> Midi::loadMidi10(const std::string& path) {
     std::ifstream file(path, std::ios::binary);
 
     if (!file.is_open()) {
 		throw std::runtime_error("Error opening MIDI file.");
     }
 
-    uint32_t MThd = read<uint32_t>(file);
+    uint32_t MThd = read(file, 4);
     if (MThd != 0x4D'54'68'64) {
         throw std::runtime_error("Error file is not a MIDI file.");
     }
 
-    uint32_t header_length = read<uint32_t>(file);
+    uint32_t header_length = read(file, 4);
 
     if (header_length != 6) {
         throw std::runtime_error("Unexpected header length");
     }
+    
+    uint32_t format =   read(file, 2);
+    uint32_t ntracks =  read(file, 2);
+    uint32_t division = read(file, 2);
 
-    uint16_t format =   read<uint16_t>(file);
-    uint16_t ntracks =  read<uint16_t>(file);
-    uint16_t division = read<uint16_t>(file);
-    float ticksPerBeat = 0.5f / (float)division;
+    std::vector<Message> messages{};
 
-    for (uint16_t trackn = 0; trackn < ntracks; ++trackn) {
-        uint32_t MTrk = read<uint32_t>(file);
+    for (uint32_t trackn = 0; trackn < ntracks; ++trackn) {
+        uint32_t MTrk = read(file, 4);
         if (MTrk != 0x4D'54'72'6B) {
             throw std::runtime_error("Error invalid track");
         }
 
-        uint32_t track_length = read<uint32_t>(file);
+        uint32_t track_length = read(file, 4);
         std::streampos start = file.tellg();
 
-        uint8_t last_status = 0;
-        float currentTime = 0.0f;
-        std::vector<int> currentProgram(16, 0);
-
-        std::unordered_map<uint16_t, Note> ongoingNotes{};
+        int last_status = 0;
+        uint32_t currentTime = 0.0f;
 
         while (true) {
             if (file.tellg() - start == track_length) break;
 
             uint32_t delta  = readVLQ(file);
 
-            currentTime += (float)delta * ticksPerBeat; // 500000.0 (tempo) * 1e-6 = 0.5
+            currentTime += delta; // 500000.0 (tempo) * 1e-6 = 0.5
 
-            uint8_t status = readByte(file);
+            int status = readByte(file);
 
             if (status < 0x80) {
                 status = last_status;
@@ -82,13 +79,15 @@ Midi::MidiFile Midi::loadMidi10(const std::string& path) {
             if (status == 0xFF) {
                 // Meta message, just skip over it UNLESS it's Set Tempo event because those are important!!!
 
-                uint8_t metatype = readByte(file);
+                int metatype = readByte(file);
                 uint32_t length = readVLQ(file);
 
 				if (metatype == 0x51 && length == 3u) {
-					// Set Tempo event // There isn't any uint24_t type so this does the same
-					uint32_t tempo = (readByte(file) << 16) | (readByte(file) << 8) | readByte(file);
-					ticksPerBeat = ((float)tempo * 1e-6f) / (float)division;
+					// Set Tempo event
+					int tempo = read(file, 3);
+                    // std::cout << "Tempo: " << 6e7f / tempo << std::endl;
+					// Formula: ticksToSeconds = (tempo * 1e-6f) / division;
+                    messages.emplace_back(Message{'=', currentTime, tempo, 64, 0});
 				} else {
 					// Other random event, ignore it
 					file.seekg(length, std::ios::cur);
@@ -101,10 +100,10 @@ Midi::MidiFile Midi::loadMidi10(const std::string& path) {
                 file.seekg(length, std::ios::cur);
 
             } else {
-                uint8_t statusType = status & 0xF0;
+                int statusType = status & 0xF0;
 
-                uint8_t data1 = 0;
-                uint8_t data2 = 0;
+                int data1 = 0;
+                int data2 = 0;
 
                 if (statusType == 0x80 || statusType == 0x90 || statusType == 0xA0 || statusType == 0xB0 || statusType == 0xE0 || status == 0xF2) {
                     data1 = readByte(file);
@@ -115,38 +114,60 @@ Midi::MidiFile Midi::loadMidi10(const std::string& path) {
 
                 if (statusType == 0x90 && data2 != 0) {
                     // Note on
-                    uint8_t channel = status & 0x0F;
-                    uint16_t id = ((uint16_t)channel << 8) | (uint16_t)data1;
-                    
-                    Note note {
-                        .time = currentTime,
-                        .volume = (float)data2 / 128.0f,
-                        .instrument = currentProgram[channel],
-                        .note = data1,
-                    };
+                    int channel = status & 0x0F;
+                    messages.emplace_back(Message{'+', currentTime, data1, data2, channel});
 
-                    ongoingNotes[id] = note;
                 } else if (statusType == 0x80 || (statusType == 0x90 && data2 == 0)) {
                     // Note off
-                    uint8_t channel = status & 0x0F;
-                    uint16_t id = ((uint16_t)channel << 8) | (uint16_t)data1;
-
-                    Note note = ongoingNotes[id];
-                    note.duration = currentTime - note.time;
-                    ongoingNotes.erase(id);
-
-                    mid.notes.push_back(note);
+                    int channel = status & 0x0F;
+                    messages.emplace_back(Message{'-', currentTime, data1, data2, channel});
+                    
                 } else if (statusType == 0xC0) {
                     // Program change
-                    uint8_t channel = status & 0x0F;
-                    currentProgram[channel] = data1;
+                    int channel = status & 0x0F;
+                    messages.emplace_back(Message{'*', currentTime, data1, 64, channel});
                 }
             }
         }
     }
 
-	std::sort(mid.notes.begin(), mid.notes.end(), [](const Midi::Note& a, const Midi::Note& b) {
+	std::sort(messages.begin(), messages.end(), [](const Message& a, const Message& b) {
 		return a.time < b.time;
 	});
-    return mid;
+    
+    std::vector<Note> notes;
+
+    std::unordered_map<int, Note> ongoingNotes;
+    std::array<int, 16> currentPrograms{};
+    float ticks2seconds = 0.5f / division;
+    float currentTime = 0.0f;
+    uint32_t lastTime = 0;
+
+    for (int i = 0; i < messages.size(); ++i) {
+        const Message& msg = messages[i];
+        currentTime += (msg.time - lastTime) * ticks2seconds;
+        lastTime = msg.time;
+        if (msg.type == '=') {
+            ticks2seconds = (msg.note * 1e-6f) / division;
+            // std::cout << "Found set tempo event for " << 6e7f / msg.note << " BPM At " << currentTime << std::endl;
+        } else if (msg.type == '*') {
+            currentPrograms[msg.channel] = msg.note;
+        } else if (msg.type == '+') {
+            int id = (msg.channel << 8) | msg.note;
+            ongoingNotes[id] = Note{
+                .time = currentTime,
+                .volume = msg.velocity / 128.0f,
+                .instrument = currentPrograms[msg.channel],
+                .note = msg.note
+            };
+        } else if (msg.type == '-') {
+            int id = (msg.channel << 8) | msg.note;
+            Note note = ongoingNotes[id];
+            note.duration = currentTime - note.time;
+            ongoingNotes.erase(id);
+            notes.emplace_back(note);
+        }
+    }
+
+    return notes;
 };

@@ -6,21 +6,26 @@
 
 int main(int argc, const char** argv) {
 	std::vector<std::string> args;
-	std::unordered_set<std::string> flags;
+	std::unordered_map<std::string, std::string> flags;
 	for (int i = 0; i < argc; ++i) {
 		std::string arg(argv[i]);
 		if (arg.starts_with("--")) {
 			arg.erase(0, 2);
-			flags.insert(arg);
+			size_t eqPos = arg.find('=');
+			if (eqPos == std::string::npos) {
+				flags[arg] = "true";
+			} else {
+				flags[arg.substr(0, eqPos)] = arg.substr(eqPos + 1);
+			}
 		} else args.push_back(arg);
 	}
 
     if (args.size() < 2) {
-        std::cout << "Usage: " + std::string(args[0]) + " <midi-file> <music-file> [seed] [--fullscreen] [--visgen (Visualize Generation)]" << std::endl;
+        std::cout << "Usage: " + std::string(args[0]) + " <midi-file> <music-file> [--seed=seed] [--fullscreen] [--visgen (Visualize Generation)]" << std::endl;
         return 0;
     }
 
-	bool fullscreen = flags.contains("fullscreen");
+	bool fullscreen = flags.contains("fullscreen") && flags["fullscreen"] == "true";
     sf::RenderWindow window(fullscreen ? sf::VideoMode::getDesktopMode() : sf::VideoMode({800, 600}), "Midi Bounce", fullscreen ? sf::State::Fullscreen : sf::State::Windowed);
     window.setVerticalSyncEnabled(true);
 	window.setMouseCursorVisible(false);
@@ -32,27 +37,25 @@ int main(int argc, const char** argv) {
 	
     sf::Music music(args[2]);
 	
-    unsigned int seed = args.size() > 3 ? std::stoi(args[3]) : time(nullptr);
+    unsigned int seed = flags.contains("seed") ? std::stoi(flags["seed"]) : time(nullptr);
 	std::cout << "Seed: " << seed << std::endl;
     
     std::cout << "Loading MidiFile..." << std::endl;
-	Midi::MidiFile mid = Midi::loadMidi10(args[1]);
+	auto mid = Midi::loadMidi10(args[1]);
 
     std::cout << "Removing overlapping notes..." << std::endl;
 	std::vector<float> data;
 	float minSpacing = 0.03f;
 	float lastNoteTime = 0.0f;
-	for (const auto& note : mid.notes) if (note.time > lastNoteTime + minSpacing) {
+	for (const auto& note : mid) if (note.time > lastNoteTime + minSpacing) {
 		lastNoteTime = note.time;
 		data.push_back(note.time);
 	}
 
     std::cout << "Generating world..." << std::endl;
-	world.generateBounces(data, seed, window, flags.contains("visgen"));
+	world.generateBounces(data, seed, window, flags.contains("visgen") && flags["visgen"] == "true");
 
     std::cout << "Finished loading" << std::endl;
-    
-    float timewarp = 1.0f;
 	
     sf::Vector2f camerapos = {0.0f, 0.0f};
     bool flyingmode = false;
@@ -72,7 +75,7 @@ int main(int argc, const char** argv) {
 	
     bool started = false;
 
-	sf::Clock deltaClock{};
+	sf::Clock deltaClock;
 
     while (window.isOpen()) {
         float deltaTime = deltaClock.restart().asSeconds();
@@ -91,8 +94,8 @@ int main(int argc, const char** argv) {
         }
 
         if (started && nextBounce < world.bounces.size()) {
-            time += deltaTime * timewarp;
-            square.position += square.direction * square.speed * deltaTime * timewarp;
+            time += deltaTime;
+            square.position += square.direction * square.speed * deltaTime;
             if (const Bounce& bounce = world.bounces[nextBounce]; time >= bounce.time) {
                 square.position = bounce.position;
                 square.direction = bounce.direction;
@@ -115,7 +118,9 @@ int main(int argc, const char** argv) {
             } else if (const auto* resized = event->getIf<sf::Event::Resized>()) {
                 window.setView(sf::View{sf::FloatRect{{0.0f, 0.0f},{(float)resized->size.x, (float)resized->size.y}}});
             } else if (const auto* key = event->getIf<sf::Event::KeyPressed>()) {
-                if (key->scancode == sf::Keyboard::Scan::Num0) {
+				if (key->scancode == sf::Keyboard::Scan::Escape) {
+					window.close();
+				} else if (key->scancode == sf::Keyboard::Scan::Num0) {
                     flyingmode = !flyingmode;
                 } else if (key->scancode == sf::Keyboard::Scan::R) {
                     started = false;

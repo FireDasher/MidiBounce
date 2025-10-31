@@ -26,12 +26,16 @@ namespace Midi {
             return "MidiNote{{ Time: " + std::to_string(time) + ", Duration: " + std::to_string(duration) + ", Volume: " + std::to_string(volume) + ", Instrument: " + std::to_string(instrument) + ", Note: " + std::to_string(note) + " }}";
         }
     };
-	
-    // A MIDI file
-    struct MidiFile {
-        std::vector<Note> notes;
+
+    // MIDI Message
+    struct Message {
+        char type; // '-' = Notof '+' = Noton '=' = SetTempo '*' = Program change
+        unsigned int time; // Absolute Ticks
+        int note; // Note or Tempo or Program
+        int velocity; // 1 - 128
+        int channel;
     };
 
     // A function that loads a MIDI 1.0 file
-    MidiFile loadMidi10(const std::string& path);
+    std::vector<Note> loadMidi10(const std::string& path);
 }

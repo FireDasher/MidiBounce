@@ -71,9 +71,11 @@ void World::generateBounces(const std::vector<float>& notes, unsigned int seed, 
 
 	bool cancel = false;
 
-    while (nextNote < notes.size() && !cancel) {
+    while (nextNote < notes.size() && !cancel && !sf::Keyboard::isKeyPressed(sf::Keyboard::Scan::Escape)) {
+		// Move square
         square.position += square.direction * square.speed * delta;
         path.push_back(square.getRect());
+		// Goofy ahh system to prevent the square from phasing through bounces
         if (collided || collideListBounces(square.getRect(), bounces)) {
             if (collided) {
 				backtracedBounces.erase(bounces.size() - 1);
@@ -112,7 +114,7 @@ void World::generateBounces(const std::vector<float>& notes, unsigned int seed, 
 
 			Bounce bounce{square.position, square.direction, vertical, time};
 
-			sigmaAreas.push_back(rectUnion(startRect, square.getRect()));
+			// sigmaAreas.push_back(rectUnion(startRect, square.getRect()));
 			bounces.push_back(bounce);
 
 			startRect = square.getRect();
@@ -168,6 +170,19 @@ void World::generateBounces(const std::vector<float>& notes, unsigned int seed, 
         }
     }
 
+	// Create sigma areas
+	square.position = {0.0f, 0.0f};
+	square.direction = {1.0f, 1.0f};
+	startRect = square.getRect();
+
+	for (int i = 0; i < bounces.size(); ++i) {
+		square.position = bounces[i].position;
+		square.direction = bounces[i].direction;
+		sigmaAreas.push_back(rectUnion(startRect, square.getRect()));
+		startRect = square.getRect();
+	}
+
+	// Reset square
     square.position = {0.0f, 0.0f};
     square.direction = {1.0f, 1.0f};
 }
